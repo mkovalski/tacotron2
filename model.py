@@ -207,6 +207,7 @@ class Decoder(nn.Module):
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
         self.encoder_embedding_dim = hparams.encoder_embedding_dim
+        self.noise_dim = hparams.noise_dim
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -220,24 +221,24 @@ class Decoder(nn.Module):
             [hparams.prenet_dim, hparams.prenet_dim])
 
         self.attention_rnn = nn.LSTMCell(
-            hparams.prenet_dim + hparams.encoder_embedding_dim,
+            hparams.prenet_dim + hparams.encoder_embedding_dim + self.noise_dim,
             hparams.attention_rnn_dim)
 
         self.attention_layer = Attention(
-            hparams.attention_rnn_dim, hparams.encoder_embedding_dim,
+            hparams.attention_rnn_dim, hparams.encoder_embedding_dim + self.noise_dim,
             hparams.attention_dim, hparams.attention_location_n_filters,
             hparams.attention_location_kernel_size)
 
         self.decoder_rnn = nn.LSTMCell(
-            hparams.attention_rnn_dim + hparams.encoder_embedding_dim,
+            hparams.attention_rnn_dim + hparams.encoder_embedding_dim + self.noise_dim,
             hparams.decoder_rnn_dim, 1)
 
         self.linear_projection = LinearNorm(
-            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim,
+            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim + self.noise_dim,
             hparams.n_mel_channels * hparams.n_frames_per_step)
 
         self.gate_layer = LinearNorm(
-            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim, 1,
+            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim + self.noise_dim, 1,
             bias=True, w_init_gain='sigmoid')
 
     def get_go_frame(self, memory):
@@ -282,7 +283,7 @@ class Decoder(nn.Module):
         self.attention_weights_cum = Variable(memory.data.new(
             B, MAX_TIME).zero_())
         self.attention_context = Variable(memory.data.new(
-            B, self.encoder_embedding_dim).zero_())
+            B, self.encoder_embedding_dim + self.noise_dim).zero_())
 
         self.memory = memory
         self.processed_memory = self.attention_layer.memory_layer(memory)
@@ -349,6 +350,7 @@ class Decoder(nn.Module):
         gate_output: gate output energies
         attention_weights:
         """
+        
         cell_input = torch.cat((decoder_input, self.attention_context), -1)
         self.attention_hidden, self.attention_cell = self.attention_rnn(
             cell_input, (self.attention_hidden, self.attention_cell))
@@ -374,7 +376,7 @@ class Decoder(nn.Module):
             (self.decoder_hidden, self.attention_context), dim=1)
         decoder_output = self.linear_projection(
             decoder_hidden_attention_context)
-
+        
         gate_prediction = self.gate_layer(decoder_hidden_attention_context)
         return decoder_output, gate_prediction, self.attention_weights
 
@@ -392,7 +394,7 @@ class Decoder(nn.Module):
         gate_outputs: gate outputs from the decoder
         alignments: sequence of attention weights from the decoder
         """
-
+        
         decoder_input = self.get_go_frame(memory).unsqueeze(0)
         decoder_inputs = self.parse_decoder_inputs(decoder_inputs)
         decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0)
@@ -400,9 +402,11 @@ class Decoder(nn.Module):
 
         self.initialize_decoder_states(
             memory, mask=~get_mask_from_lengths(memory_lengths))
-
+        
         mel_outputs, gate_outputs, alignments = [], [], []
+
         while len(mel_outputs) < decoder_inputs.size(0) - 1:
+
             decoder_input = decoder_inputs[len(mel_outputs)]
             mel_output, gate_output, attention_weights = self.decode(
                 decoder_input)
@@ -453,8 +457,35 @@ class Decoder(nn.Module):
 
         return mel_outputs, gate_outputs, alignments
 
+class Discriminator(nn.Module):
+    def __init__(self, hparams):
+        super(Discriminator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(80, 64),
+            nn.Dropout(0.3),
+            nn.LeakyReLU(0.2, inplace = True),
+            nn.Linear(64, 32),
+            nn.Dropout(0.2),
+            nn.LeakyReLU(0.2, inplace = True),
+            nn.Linear(32, 16),
+            nn.Dropout(0.2),
+            nn.LeakyReLU(0.2, inplace = True),
+            nn.Linear(16, 1),
+            nn.Sigmoid())
+ 
+    def forward(self, mel):
+        mel = mel.permute(2, 0, 1)
+
+        scores = []
+        for i in range(mel.size(0)):
+            scores.append(self.model(mel[i,]))
+
+        scores = torch.stack(scores).permute(1, 0, 2)
+
+        return scores
 
 class Tacotron2(nn.Module):
+    '''Generator model'''
     def __init__(self, hparams):
         super(Tacotron2, self).__init__()
         self.mask_padding = hparams.mask_padding
@@ -471,9 +502,10 @@ class Tacotron2(nn.Module):
         self.postnet = Postnet(hparams)
 
     def parse_batch(self, batch):
-        text_padded, input_lengths, mel_padded, gate_padded, \
+        text_padded, noise, input_lengths, mel_padded, gate_padded, \
             output_lengths = batch
         text_padded = to_gpu(text_padded).long()
+        noise = to_gpu(noise).float()
         input_lengths = to_gpu(input_lengths).long()
         max_len = torch.max(input_lengths.data).item()
         mel_padded = to_gpu(mel_padded).float()
@@ -481,7 +513,7 @@ class Tacotron2(nn.Module):
         output_lengths = to_gpu(output_lengths).long()
 
         return (
-            (text_padded, input_lengths, mel_padded, max_len, output_lengths),
+            (text_padded, noise, input_lengths, mel_padded, max_len, output_lengths),
             (mel_padded, gate_padded))
 
     def parse_output(self, outputs, output_lengths=None):
@@ -497,19 +529,24 @@ class Tacotron2(nn.Module):
         return outputs
 
     def forward(self, inputs):
-        text_inputs, text_lengths, mels, max_len, output_lengths = inputs
+        
+
+        text_inputs, noise, text_lengths, mels, max_len, output_lengths = inputs
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 
+        # tf.cat layer here to append random noise
+        encoder_outputs = torch.cat((encoder_outputs, noise), -1)
+        
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)
 
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
-
+        
         return self.parse_output(
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
             output_lengths)

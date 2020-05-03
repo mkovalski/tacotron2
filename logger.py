@@ -9,9 +9,10 @@ class Tacotron2Logger(SummaryWriter):
     def __init__(self, logdir):
         super(Tacotron2Logger, self).__init__(logdir)
 
-    def log_training(self, reduced_loss, grad_norm, learning_rate, duration,
+    def log_training(self, g_loss, d_loss, grad_norm, learning_rate, duration,
                      iteration):
-            self.add_scalar("training.loss", reduced_loss, iteration)
+            self.add_scalar("g.loss", g_loss, iteration)
+            self.add_scalar("discrim.loss", d_loss, iteration)
             self.add_scalar("grad.norm", grad_norm, iteration)
             self.add_scalar("learning.rate", learning_rate, iteration)
             self.add_scalar("duration", duration, iteration)

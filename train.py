@@ -5,14 +5,15 @@ import math
 from numpy import finfo
 
 import torch
+from torch import nn
 from distributed import apply_gradient_allreduce
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 
-from model import Tacotron2
+from model import Tacotron2, Discriminator
 from data_utils import TextMelLoader, TextMelCollate
-from loss_function import Tacotron2Loss
+from loss_function import Tacotron2Loss, GANLoss
 from logger import Tacotron2Logger
 from hparams import create_hparams
 
@@ -43,7 +44,7 @@ def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
     trainset = TextMelLoader(hparams.training_files, hparams)
     valset = TextMelLoader(hparams.validation_files, hparams)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step)
+    collate_fn = TextMelCollate(hparams.n_frames_per_step, hparams.noise_dim)
 
     if hparams.distributed_run:
         train_sampler = DistributedSampler(trainset)
@@ -109,12 +110,14 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     return model, optimizer, learning_rate, iteration
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
+def save_checkpoint(generator, discriminator, g_opt, d_opt, learning_rate, iteration, filepath):
     print("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
     torch.save({'iteration': iteration,
-                'state_dict': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
+                'gen_dict': generator.state_dict(),
+                'discrim_dict': discriminator.state_dict(),
+                'g_optimizer': g_opt.state_dict(),
+                'd_optimizer': d_opt.state_dict(),
                 'learning_rate': learning_rate}, filepath)
 
 
@@ -165,20 +168,30 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     torch.manual_seed(hparams.seed)
     torch.cuda.manual_seed(hparams.seed)
 
-    model = load_model(hparams)
+    # Load the two models
+    generator = load_model(hparams)
+    discriminator = Discriminator(hparams).cuda()
+    
     learning_rate = hparams.learning_rate
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,
+    g_optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate,
                                  weight_decay=hparams.weight_decay)
+    
+    d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=learning_rate,
+                                 weight_decay=hparams.weight_decay)
+
+    gen_steps = hparams.gen_steps
+    discrim_steps = hparams.discrim_steps
 
     if hparams.fp16_run:
         from apex import amp
-        model, optimizer = amp.initialize(
-            model, optimizer, opt_level='O2')
+        generator, g_optimizer = amp.initialize(
+            generator, g_optimizer, opt_level='O2')
 
     if hparams.distributed_run:
-        model = apply_gradient_allreduce(model)
+        generator = apply_gradient_allreduce(generator)
 
-    criterion = Tacotron2Loss()
+    #criterion = Tacotron2Loss()
+    criterion = GANLoss()
 
     logger = prepare_directories_and_logger(
         output_directory, log_directory, rank)
@@ -190,67 +203,104 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     epoch_offset = 0
     if checkpoint_path is not None:
         if warm_start:
-            model = warm_start_model(
-                checkpoint_path, model, hparams.ignore_layers)
+            generator = warm_start_model(
+                checkpoint_path, generator, hparams.ignore_layers)
         else:
-            model, optimizer, _learning_rate, iteration = load_checkpoint(
-                checkpoint_path, model, optimizer)
+            generator, g_optimizer, _learning_rate, iteration = load_checkpoint(
+                checkpoint_path, generator, g_optimizer)
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
             iteration += 1  # next iteration is iteration + 1
             epoch_offset = max(0, int(iteration / len(train_loader)))
 
-    model.train()
+    generator.train()
+    discriminator.train()
+    gate_loss = nn.BCEWithLogitsLoss()
+
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
-            for param_group in optimizer.param_groups:
+            for param_group in g_optimizer.param_groups:
                 param_group['lr'] = learning_rate
+                
+            # Train the generator
+            generator.zero_grad()
+                
+            # Run Tacotron2
+            x, y = generator.parse_batch(batch)
+            y_pred = generator(x)
+            
+            # Discrim over the true + true modified
+            g_pred = discriminator(y_pred[0])
+            g_pred_post = discriminator(y_pred[1])
+            
+            # Create label on the fly
+            label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
+            
+            # Error for generator pre + post net
+            err_G_pre = criterion(g_pred, label)
+            err_G_post = criterion(g_pred_post, label)
+            y[1].requires_grad = False
+            err_gate = gate_loss(y_pred[2], y[1])
 
-            model.zero_grad()
-            x, y = model.parse_batch(batch)
-            y_pred = model(x)
-
-            loss = criterion(y_pred, y)
-            if hparams.distributed_run:
-                reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_loss = loss.item()
-            if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-
+            err_G = err_G_pre + err_G_post + err_gate
+            err_G.backward()
+            
+            # Gradient norm
             if hparams.fp16_run:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     amp.master_params(optimizer), hparams.grad_clip_thresh)
                 is_overflow = math.isnan(grad_norm)
             else:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), hparams.grad_clip_thresh)
+                    generator.parameters(), hparams.grad_clip_thresh)
 
-            optimizer.step()
+            g_optimizer.step()
+
+            # Train the discriminator
+            discriminator.zero_grad()
+            
+            true_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
+            fake_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 0).cuda()
+            
+            d_pred_true = discriminator(y[0])
+            d_pred_false = discriminator(y_pred[0].detach())
+
+            err_D_true = criterion(d_pred_true, true_label)
+            err_D_fake = criterion(d_pred_false, fake_label)
+            
+            err_D = (err_D_true + err_D_fake) / 2
+            err_D.backward()
+            d_optimizer.step()
+
+            if hparams.distributed_run:
+                reduced_loss = reduce_tensor(loss.data, n_gpus).item()
+            else:
+                g_loss, d_loss = err_G.item(), err_D.item()
+
+            if hparams.fp16_run:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
 
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
-                print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
-                    iteration, reduced_loss, grad_norm, duration))
+                print("Train it {}: G_loss {:.6f} D_loss {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
+                    iteration, g_loss, d_loss, grad_norm, duration))
                 logger.log_training(
-                    reduced_loss, grad_norm, learning_rate, duration, iteration)
+                    g_loss, d_loss, grad_norm, learning_rate, duration, iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
-                validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank)
+                #validate(generator, criterion, valset, iteration,
+                #         hparams.batch_size, n_gpus, collate_fn, logger,
+                #         hparams.distributed_run, rank)
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
-                                    checkpoint_path)
+                    save_checkpoint(generator, discriminator, g_optimizer, d_optimizer,
+                                    learning_rate, iteration, checkpoint_path)
 
             iteration += 1
 

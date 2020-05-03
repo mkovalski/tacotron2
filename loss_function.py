@@ -17,3 +17,14 @@ class Tacotron2Loss(nn.Module):
             nn.MSELoss()(mel_out_postnet, mel_target)
         gate_loss = nn.BCEWithLogitsLoss()(gate_out, gate_target)
         return mel_loss + gate_loss
+
+class GANLoss(nn.Module):
+    def __init__(self):
+        super(GANLoss, self).__init__()
+    
+    def forward(self, logits, labels):
+        labels.requires_grad = False
+        mel_loss = nn.BCELoss()(logits, labels)
+
+        return mel_loss
+        
