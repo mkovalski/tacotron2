@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
 from utils import to_gpu, get_mask_from_lengths
-
+import torch.nn.functional as F
 
 class LocationLayer(nn.Module):
     def __init__(self, attention_n_filters, attention_kernel_size,
@@ -460,29 +460,48 @@ class Decoder(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, hparams):
         super(Discriminator, self).__init__()
+        self.min_width = 64
+
+        nc = 1
+        ndf = 4
+
         self.model = nn.Sequential(
-            nn.Linear(81, 64),
-            nn.Dropout(0.3),
-            nn.LeakyReLU(0.2, inplace = True),
-            nn.Linear(64, 32),
-            nn.Dropout(0.2),
-            nn.LeakyReLU(0.2, inplace = True),
-            nn.Linear(32, 16),
-            nn.Dropout(0.2),
-            nn.LeakyReLU(0.2, inplace = True),
-            nn.Linear(16, 1),
-            nn.Sigmoid())
- 
+            # input is (nc) x 64 x 64
+            nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            # state size. (ndf) x 32 x 32
+            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            # state size. (ndf*2) x 16 x 16
+            nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            # state size. (ndf*4) x 8 x 8
+            nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+            # state size. (ndf*8) x 4 x 4
+            nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
+            )
+
     def forward(self, mel):
-        mel = mel.permute(2, 0, 1)
 
+        min_padding = 0
+        if mel.shape[-1] % self.min_width != 0:
+            min_padding = self.min_width - (mel.shape[-1] % self.min_width)
+            mel = F.pad(input=mel, pad=(0, min_padding, 0, 0, 0, 0,), mode='constant', value=0)
+
+        mel = mel.unsqueeze(1)
+        
         scores = []
-        for i in range(mel.size(0)):
-            scores.append(self.model(mel[i,]))
-
-        scores = torch.stack(scores).permute(1, 0, 2)
-
-        return scores
+        for i in range(0, mel.shape[-1], self.min_width):
+            score = self.model(mel[:, :, :, i:i+self.min_width])
+            score = nn.Linear(2, 1).cuda()(score.view(score.size(0), -1))
+            score = nn.Sigmoid().cuda()(score)
+            scores.append(score)
+        
+        return torch.cat(scores, -1)
 
 class Tacotron2(nn.Module):
     '''Generator model'''
@@ -535,9 +554,6 @@ class Tacotron2(nn.Module):
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
-
-        import pdb
-        pdb.set_trace()
 
         # tf.cat layer here to append random noise
         encoder_outputs = torch.cat((encoder_outputs, noise), -1)
