@@ -536,6 +536,9 @@ class Tacotron2(nn.Module):
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 
+        import pdb
+        pdb.set_trace()
+
         # tf.cat layer here to append random noise
         encoder_outputs = torch.cat((encoder_outputs, noise), -1)
         
@@ -550,8 +553,12 @@ class Tacotron2(nn.Module):
             output_lengths)
 
     def inference(self, inputs):
-        embedded_inputs = self.embedding(inputs).transpose(1, 2)
+        text, noise = inputs
+        embedded_inputs = self.embedding(text).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
+        
+        encoder_outputs = torch.cat((encoder_outputs, noise), -1)
+
         mel_outputs, gate_outputs, alignments = self.decoder.inference(
             encoder_outputs)
 

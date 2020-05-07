@@ -226,6 +226,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 
             # Train the generator
             generator.zero_grad()
+
+            import pdb
+            pdb.set_trace()
                 
             # Run Tacotron2
             x, y = generator.parse_batch(batch)
