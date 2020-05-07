@@ -17,7 +17,6 @@ from loss_function import Tacotron2Loss, GANLoss
 from logger import Tacotron2Logger
 from hparams import create_hparams
 
-
 def reduce_tensor(tensor, n_gpus):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.reduce_op.SUM)
@@ -215,7 +214,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     generator.train()
     discriminator.train()
-    gate_loss = nn.BCEWithLogitsLoss()
 
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
@@ -233,9 +231,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             x, y = generator.parse_batch(batch)
             y_pred = generator(x)
             
+
+            # Stack the predictions with the gate, pass all to discriminator
+            y_pred_pre = torch.cat([y_pred[0], torch.unsqueeze(y_pred[2], axis = 1)], dim = 1)
+            y_pred_post = torch.cat([y_pred[1], torch.unsqueeze(y_pred[2], axis = 1)], dim = 1)
+            
             # Discrim over the true + true modified
-            g_pred = discriminator(y_pred[0])
-            g_pred_post = discriminator(y_pred[1])
+            g_pred = discriminator(y_pred_pre)
+            g_pred_post = discriminator(y_pred_post)
             
             # Create label on the fly
             label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
@@ -243,12 +246,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             # Error for generator pre + post net
             err_G_pre = criterion(g_pred, label)
             err_G_post = criterion(g_pred_post, label)
-            y[1].requires_grad = False
-            err_gate = gate_loss(y_pred[2], y[1])
 
-            err_G = err_G_pre + err_G_post + err_gate
+            err_G = err_G_pre + err_G_post
             err_G.backward()
             
+
             # Gradient norm
             if hparams.fp16_run:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -266,8 +268,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             true_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
             fake_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 0).cuda()
             
-            d_pred_true = discriminator(y[0])
-            d_pred_false = discriminator(y_pred[0].detach())
+            y_stacked = torch.cat([y[0], y[1].unsqueeze(1)], axis = 1)
+            d_pred_true = discriminator(y_stacked)
+            d_pred_false = discriminator(y_pred_post.detach())
 
             err_D_true = criterion(d_pred_true, true_label)
             err_D_fake = criterion(d_pred_false, fake_label)
@@ -288,7 +291,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
                 print("Train it {}: G_loss {:.6f} D_loss {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
-                    iteration, g_loss, d_loss, grad_norm, duration))
+                    iteration, g_loss, d_loss, grad_norm, duration), flush = True)
                 logger.log_training(
                     g_loss, d_loss, grad_norm, learning_rate, duration, iteration)
 

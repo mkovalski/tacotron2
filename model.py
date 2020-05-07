@@ -461,7 +461,7 @@ class Discriminator(nn.Module):
     def __init__(self, hparams):
         super(Discriminator, self).__init__()
         self.model = nn.Sequential(
-            nn.Linear(80, 64),
+            nn.Linear(81, 64),
             nn.Dropout(0.3),
             nn.LeakyReLU(0.2, inplace = True),
             nn.Linear(64, 32),
@@ -529,8 +529,6 @@ class Tacotron2(nn.Module):
         return outputs
 
     def forward(self, inputs):
-        
-
         text_inputs, noise, text_lengths, mels, max_len, output_lengths = inputs
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
 
