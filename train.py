@@ -292,12 +292,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             g_optimizer.zero_grad()
             
             for _ in range(gen_steps):
-
-                y_pred = generator(x, z)
-                y_post = y_pred[1]
-                if hparams.add_gan_noise:
-                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
-
                 g_out = discriminator(x[0], y_post)
                 real_label = torch.full(g_out.size(), 1.0).cuda()
                 err_G = criterion(g_out, real_label)
