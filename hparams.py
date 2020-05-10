@@ -81,7 +81,6 @@ def create_hparams(hparams_string=None, verbose=False):
         noise_dim=64, # For generator input
         gen_steps = 2,
         discrim_steps = 1,
-        loss_type = 'dcgan', # Choose dcgan or wgan
         discrim_norm_type = 'instance', # Choose batch or instance
         add_gan_noise = True,
 
