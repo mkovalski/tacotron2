@@ -7,7 +7,7 @@ import sys
 import math
 import numpy as np
 
-TODIR = '../tacotron2/filelists/'
+TODIR = '../filelists/'
 assert(os.path.isdir(TODIR)), \
     "Make sure {} exists, maybe check you pulled the submodules".format(TODIR)
 
@@ -34,7 +34,6 @@ for word in paths:
 
     train_stop = math.floor(len(indices) * TRAIN)
     val_stop = train_stop + math.floor(len(indices) * VAL)
-    print(train_stop, val_stop, len(indices))
 
     for idx in indices[0:train_stop]:
         train.append(os.path.join(curr_dir, files[idx]) + '|' + word + '\n')

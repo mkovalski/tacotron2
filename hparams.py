@@ -83,6 +83,7 @@ def create_hparams(hparams_string=None, verbose=False):
         discrim_steps = 1,
         discrim_norm_type = 'instance', # Choose batch or instance
         add_gan_noise = True,
+        label_smooth = 0.1,
 
         ################################
         # Optimization Hyperparameters #

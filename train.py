@@ -256,8 +256,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 # Real outputs
                 d_real_out = discriminator(x[0], y[0])
                 # Labels
-                real_label = torch.full(d_real_out.size(), 0.9).cuda()
-                fake_label = torch.full(d_real_out.size(), 0).cuda()
+                real_label = torch.full(d_real_out.size(), 1.0 - hparams.label_smooth).cuda()
+                fake_label = torch.full(d_real_out.size(), 0.0 + hparams.label_smooth).cuda()
 
                 errD_real = criterion(d_real_out, real_label)
                 
