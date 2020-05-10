@@ -239,22 +239,26 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 param_group['lr'] = learning_rate
                 
             # Discriminator loss first
-            d_optimizer.zero_grad()
             
             # Sample data
             x, y = generator.parse_batch(batch)
             text = x[0]
             mels_true = y[0]
-            if hparams.add_gan_noise:
-                y[0].add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
 
-            # Generate noise variable
+            if hparams.add_gan_noise:
+                mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+
+            # Forward model
             z = Variable(torch.cuda.FloatTensor(
                 np.random.normal(size = (hparams.batch_size, x[0].size(1), hparams.noise_dim))))
+            y_pred = generator(x, z)
+            y_post = y_pred[1]
             
             for _ in range(discrim_steps):
+                d_optimizer.zero_grad()
+
                 # Real outputs
-                d_real_out = discriminator(x[0], y[0])
+                d_real_out = discriminator(text, mels_true)
                 # Labels
                 real_label = torch.full(d_real_out.size(), 1.0 - hparams.label_smooth).cuda()
                 fake_label = torch.full(d_real_out.size(), 0.0 + hparams.label_smooth).cuda()
@@ -267,14 +271,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 else:
                     errD_real.backward()
                 
-                # Forward model
-                y_pred = generator(x, z)
-                y_post = y_pred[1]
-                if hparams.add_gan_noise:
-                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
-                
                 # Fake error
-                d_fake_out = discriminator(x[0], y_post.detach())
+                d_fake_out = discriminator(text, y_post.detach())
                 errD_fake = criterion(d_fake_out, fake_label)
                 
                 if hparams.fp16_run:
@@ -289,10 +287,20 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 d_optimizer.step()
             
             # Generator loss
-            g_optimizer.zero_grad()
-            
             for _ in range(gen_steps):
-                g_out = discriminator(x[0], y_post)
+                g_optimizer.zero_grad()
+                # Generate noise variable
+                z = Variable(torch.cuda.FloatTensor(
+                    np.random.normal(size = (hparams.batch_size, text.size(1), hparams.noise_dim))))
+
+                # Forward model
+                y_pred = generator(x, z)
+                y_post = y_pred[1]
+
+                if hparams.add_gan_noise:
+                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+
+                g_out = discriminator(text, y_post)
                 real_label = torch.full(g_out.size(), 1.0).cuda()
                 err_G = criterion(g_out, real_label)
 
