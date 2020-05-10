@@ -10,23 +10,24 @@ def create_hparams(hparams_string=None, verbose=False):
         # Experiment Parameters        #
         ################################
         epochs=500,
+        iters_per_train_log=100,
         iters_per_checkpoint=1000,
         seed=1234,
         dynamic_loss_scaling=True,
-        fp16_run=False,
+        fp16_run=True,
         distributed_run=False,
         dist_backend="nccl",
         dist_url="tcp://localhost:54321",
         cudnn_enabled=True,
-        cudnn_benchmark=False,
+        cudnn_benchmark=True,
         ignore_layers=['embedding.weight'],
 
         ################################
         # Data Parameters             #
         ################################
         load_mel_from_disk=False,
-        training_files='filelists/sc_audio_text_train_filelist.txt',
-        validation_files='filelists/sc_audio_text_val_filelist.txt',
+        training_files=['filelists/sc_audio_text_train_filelist.txt'],
+        validation_files=['filelists/sc_audio_text_val_filelist.txt'],
         text_cleaners=['english_cleaners'],
 
         ################################
@@ -35,7 +36,7 @@ def create_hparams(hparams_string=None, verbose=False):
         max_wav_value=32768.0,
         sampling_rate=16000,
         filter_length=1024,
-        hop_length=256,
+        hop_length=128,
         win_length=1024,
         n_mel_channels=80,
         mel_fmin=0.0,
@@ -46,7 +47,6 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         n_symbols=len(symbols),
         symbols_embedding_dim=512,
-        noise_dim=64, # For generator input
 
         # Encoder parameters
         encoder_kernel_size=5,
@@ -76,17 +76,23 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_n_convolutions=5,
 
         # GAN parameters
-        gen_steps = 1,
+        discrim_min_width = 64,
+        discrim_stride = 32,
+        noise_dim=64, # For generator input
+        gen_steps = 2,
         discrim_steps = 1,
+        loss_type = 'dcgan', # Choose dcgan or wgan
+        discrim_norm_type = 'instance', # Choose batch or instance
+        add_gan_noise = True,
 
         ################################
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        learning_rate=1e-3,
+        learning_rate=1e-4,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=128,
+        batch_size=32,
         mask_padding=True  # set model's padded outputs to padded values
     )
 

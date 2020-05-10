@@ -460,10 +460,23 @@ class Decoder(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, hparams):
         super(Discriminator, self).__init__()
-        self.min_width = 64
+        self.min_width = hparams.discrim_min_width
+        self.stride = hparams.discrim_stride
+
+        self.embedding = nn.Embedding(hparams.n_symbols, 
+                                      80)
+
+        std = sqrt(2.0 / (hparams.n_symbols + hparams.symbols_embedding_dim))
+        val = sqrt(3.0) * std  # uniform bounds for std
+        self.embedding.weight.data.uniform_(-val, val)
 
         nc = 1
         ndf = 4
+
+        norms = {'batch': nn.BatchNorm2d,
+                 'instance': nn.InstanceNorm2d}
+
+        d_norm = norms[hparams.discrim_norm_type]
 
         self.model = nn.Sequential(
             # input is (nc) x 64 x 64
@@ -471,37 +484,46 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf) x 32 x 32
             nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ndf * 2),
+            d_norm(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*2) x 16 x 16
             nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ndf * 4),
+            d_norm(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*4) x 8 x 8
             nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ndf * 8),
+            d_norm(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*8) x 4 x 4
             nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
             )
+        
+        self.linear = nn.Linear(2, 1)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, mel):
-
+    def forward(self, text, mel):
+        
+        # Pad with as many zeros as we need to for making the full MFCC fit
+        # do so with a min width of 64
+        embedding_inputs = self.embedding(text).transpose(1, 2)
+        
+        mel = torch.cat([embedding_inputs, mel], 2)
+        
         min_padding = 0
         if mel.shape[-1] % self.min_width != 0:
             min_padding = self.min_width - (mel.shape[-1] % self.min_width)
             mel = F.pad(input=mel, pad=(0, min_padding, 0, 0, 0, 0,), mode='constant', value=0)
 
         mel = mel.unsqueeze(1)
-        
+
         scores = []
-        for i in range(0, mel.shape[-1], self.min_width):
+        for i in range(0, mel.shape[-1] - self.min_width, self.stride):
             score = self.model(mel[:, :, :, i:i+self.min_width])
-            score = nn.Linear(2, 1).cuda()(score.view(score.size(0), -1))
-            score = nn.Sigmoid().cuda()(score)
+            score = self.sigmoid(score)
             scores.append(score)
         
-        return torch.cat(scores, -1)
+        scores = torch.cat(scores, axis = -1)
+        return scores
 
 class Tacotron2(nn.Module):
     '''Generator model'''
@@ -521,10 +543,9 @@ class Tacotron2(nn.Module):
         self.postnet = Postnet(hparams)
 
     def parse_batch(self, batch):
-        text_padded, noise, input_lengths, mel_padded, gate_padded, \
+        text_padded, input_lengths, mel_padded, gate_padded, \
             output_lengths = batch
         text_padded = to_gpu(text_padded).long()
-        noise = to_gpu(noise).float()
         input_lengths = to_gpu(input_lengths).long()
         max_len = torch.max(input_lengths.data).item()
         mel_padded = to_gpu(mel_padded).float()
@@ -532,7 +553,7 @@ class Tacotron2(nn.Module):
         output_lengths = to_gpu(output_lengths).long()
 
         return (
-            (text_padded, noise, input_lengths, mel_padded, max_len, output_lengths),
+            (text_padded, input_lengths, mel_padded, max_len, output_lengths),
             (mel_padded, gate_padded))
 
     def parse_output(self, outputs, output_lengths=None):
@@ -547,16 +568,17 @@ class Tacotron2(nn.Module):
 
         return outputs
 
-    def forward(self, inputs):
-        text_inputs, noise, text_lengths, mels, max_len, output_lengths = inputs
-        text_lengths, output_lengths = text_lengths.data, output_lengths.data
+    def forward(self, inputs, z):
 
+        text_inputs, text_lengths, mels, max_len, output_lengths = inputs
+        text_lengths, output_lengths = text_lengths.data, output_lengths.data
+        
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 
         # tf.cat layer here to append random noise
-        encoder_outputs = torch.cat((encoder_outputs, noise), -1)
+        encoder_outputs = torch.cat((encoder_outputs, z), -1)
         
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)
@@ -568,12 +590,11 @@ class Tacotron2(nn.Module):
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
             output_lengths)
 
-    def inference(self, inputs):
-        text, noise = inputs
+    def inference(self, inputs, z):
         embedded_inputs = self.embedding(text).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
         
-        encoder_outputs = torch.cat((encoder_outputs, noise), -1)
+        encoder_outputs = torch.cat((encoder_outputs, z), -1)
 
         mel_outputs, gate_outputs, alignments = self.decoder.inference(
             encoder_outputs)

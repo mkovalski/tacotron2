@@ -70,15 +70,14 @@ class TextMelLoader(torch.utils.data.Dataset):
 class TextMelCollate():
     """ Zero-pads model inputs and targets based on number of frames per setep
     """
-    def __init__(self, n_frames_per_step, noise_dim):
+    def __init__(self, n_frames_per_step):
         self.n_frames_per_step = n_frames_per_step
-        self.noise_dim = noise_dim
 
     def __call__(self, batch):
         """Collate's training batch from normalized text and mel-spectrogram
         PARAMS
         ------
-        batch: [text_normalized, noise, mel_normalized]
+        batch: [text_normalized, mel_normalized]
         """
         # Right zero-pad all one-hot text sequences to max input length
         input_lengths, ids_sorted_decreasing = torch.sort(
@@ -111,9 +110,5 @@ class TextMelCollate():
             gate_padded[i, mel.size(1)-1:] = 1
             output_lengths[i] = mel.size(1)
         
-        noise = torch.from_numpy(np.random.normal(0, 1, (text_padded.shape[0],
-                                                  text_padded.shape[1],
-                                                  self.noise_dim)))
-
-        return text_padded, noise, input_lengths, mel_padded, gate_padded, \
+        return text_padded, input_lengths, mel_padded, gate_padded, \
             output_lengths

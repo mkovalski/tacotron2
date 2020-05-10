@@ -3,8 +3,10 @@ import time
 import argparse
 import math
 from numpy import finfo
+import numpy as np
 
 import torch
+from torch.autograd import Variable
 from torch import nn
 from distributed import apply_gradient_allreduce
 import torch.distributed as dist
@@ -43,7 +45,7 @@ def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
     trainset = TextMelLoader(hparams.training_files, hparams)
     valset = TextMelLoader(hparams.validation_files, hparams)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step, hparams.noise_dim)
+    collate_fn = TextMelCollate(hparams.n_frames_per_step)
 
     if hparams.distributed_run:
         train_sampler = DistributedSampler(trainset)
@@ -65,6 +67,10 @@ def prepare_directories_and_logger(output_directory, log_directory, rank):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
         logger = Tacotron2Logger(os.path.join(output_directory, log_directory))
+
+        # Copy the hparams for reproducability
+        from shutil import copyfile
+        copyfile('hparams.py', os.path.join(output_directory, 'hparams.py'))
     else:
         logger = None
     return logger
@@ -121,7 +127,7 @@ def save_checkpoint(generator, discriminator, g_opt, d_opt, learning_rate, itera
 
 
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger, distributed_run, rank):
+             collate_fn, logger, distributed_run, rank, noise_dim):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
@@ -133,20 +139,25 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         val_loss = 0.0
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
-            y_pred = model(x)
-            loss = criterion(y_pred, y)
-            if distributed_run:
-                reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_val_loss = loss.item()
-            val_loss += reduced_val_loss
-        val_loss = val_loss / (i + 1)
 
+            z = Variable(torch.cuda.FloatTensor(
+                np.random.normal(size = (batch_size, x[0].size(1), noise_dim))))
+
+            y_pred = model(x, z)
+            break
+            #loss = criterion(y_pred, y)
+            #if distributed_run:
+            #    reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
+            #else:
+            #    reduced_val_loss = loss.item()
+            #val_loss += reduced_val_loss
+        #val_loss = val_loss / (i + 1)
+    
+    val_loss = 0
     model.train()
     if rank == 0:
-        print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
+        #print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
         logger.log_validation(val_loss, model, y, y_pred, iteration)
-
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
           rank, group_name, hparams):
@@ -173,10 +184,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     
     learning_rate = hparams.learning_rate
     g_optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate,
-                                 weight_decay=hparams.weight_decay)
+                                 weight_decay=hparams.weight_decay,)
     
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=learning_rate,
-                                 weight_decay=hparams.weight_decay)
+                                 weight_decay=hparams.weight_decay,)
 
     gen_steps = hparams.gen_steps
     discrim_steps = hparams.discrim_steps
@@ -185,12 +196,15 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
         from apex import amp
         generator, g_optimizer = amp.initialize(
             generator, g_optimizer, opt_level='O2')
+        discriminator, d_optimizer = amp.initialize(
+            discriminator, d_optimizer, opt_level='O2')
 
     if hparams.distributed_run:
         generator = apply_gradient_allreduce(generator)
 
     #criterion = Tacotron2Loss()
-    criterion = GANLoss()
+    #criterion = GANLoss()
+    criterion = nn.BCELoss()
 
     logger = prepare_directories_and_logger(
         output_directory, log_directory, rank)
@@ -224,81 +238,109 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             for param_group in g_optimizer.param_groups:
                 param_group['lr'] = learning_rate
                 
-            # Train the generator
-            generator.zero_grad()
-
-            # Run Tacotron2
+            # Discriminator loss first
+            d_optimizer.zero_grad()
+            
+            # Sample data
             x, y = generator.parse_batch(batch)
-            y_pred = generator(x)
-            
+            text = x[0]
+            mels_true = y[0]
+            if hparams.add_gan_noise:
+                y[0].add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
 
-            # Stack the predictions with the gate, pass all to discriminator
-            y_pred_pre = torch.cat([y_pred[0], torch.unsqueeze(y_pred[2], axis = 1)], dim = 1)
-            y_pred_post = torch.cat([y_pred[1], torch.unsqueeze(y_pred[2], axis = 1)], dim = 1)
+            # Generate noise variable
+            z = Variable(torch.cuda.FloatTensor(
+                np.random.normal(size = (hparams.batch_size, x[0].size(1), hparams.noise_dim))))
             
-            # Discrim over the true + true modified
-            g_pred = discriminator(y_pred_pre)
-            g_pred_post = discriminator(y_pred_post)
-            
-            # Create label on the fly
-            label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
-            
-            # Error for generator pre + post net
-            err_G_pre = criterion(g_pred, label)
-            err_G_post = criterion(g_pred_post, label)
+            for _ in range(discrim_steps):
+                # Real outputs
+                d_real_out = discriminator(x[0], y[0])
+                # Labels
+                real_label = torch.full(d_real_out.size(), 0.9).cuda()
+                fake_label = torch.full(d_real_out.size(), 0).cuda()
 
-            err_G = err_G_pre + err_G_post
-            err_G.backward()
-            
+                errD_real = criterion(d_real_out, real_label)
+                
+                if hparams.fp16_run:
+                    with amp.scale_loss(errD_real, d_optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    errD_real.backward()
+                
+                # Forward model
+                y_pred = generator(x, z)
+                y_post = y_pred[1]
+                if hparams.add_gan_noise:
+                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+                
+                # Fake error
+                d_fake_out = discriminator(x[0], y_post.detach())
+                errD_fake = criterion(d_fake_out, fake_label)
+                
+                if hparams.fp16_run:
+                    with amp.scale_loss(errD_fake, d_optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    errD_fake.backward()
 
-            # Gradient norm
-            if hparams.fp16_run:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), hparams.grad_clip_thresh)
-                is_overflow = math.isnan(grad_norm)
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    generator.parameters(), hparams.grad_clip_thresh)
-
-            g_optimizer.step()
-
-            # Train the discriminator
-            discriminator.zero_grad()
+                err_D = errD_real + errD_fake
+                
+                # Optimization step
+                d_optimizer.step()
             
-            true_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 1).cuda()
-            fake_label = torch.full((g_pred.size(0), g_pred.size(1), 1), 0).cuda()
+            # Generator loss
+            g_optimizer.zero_grad()
             
-            y_stacked = torch.cat([y[0], y[1].unsqueeze(1)], axis = 1)
-            d_pred_true = discriminator(y_stacked)
-            d_pred_false = discriminator(y_pred_post.detach())
+            for _ in range(gen_steps):
 
-            err_D_true = criterion(d_pred_true, true_label)
-            err_D_fake = criterion(d_pred_false, fake_label)
-            
-            err_D = (err_D_true + err_D_fake) / 2
-            err_D.backward()
-            d_optimizer.step()
+                y_pred = generator(x, z)
+                y_post = y_pred[1]
+                if hparams.add_gan_noise:
+                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+
+                g_out = discriminator(x[0], y_post)
+                real_label = torch.full(g_out.size(), 1.0).cuda()
+                err_G = criterion(g_out, real_label)
+
+                if hparams.fp16_run:
+                    with amp.scale_loss(err_G, g_optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    err_G.backward()
+                
+                # Gradient norm
+                if hparams.fp16_run:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(g_optimizer), hparams.grad_clip_thresh)
+                    is_overflow = math.isnan(grad_norm)
+                else:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        generator.parameters(), hparams.grad_clip_thresh)
+
+                g_optimizer.step()
 
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
                 g_loss, d_loss = err_G.item(), err_D.item()
 
-            if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-
+            # Train log
             if not is_overflow and rank == 0:
                 duration = time.perf_counter() - start
                 print("Train it {}: G_loss {:.6f} D_loss {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
                     iteration, g_loss, d_loss, grad_norm, duration), flush = True)
                 logger.log_training(
                     g_loss, d_loss, grad_norm, learning_rate, duration, iteration)
-
+            
+            # Log images during training
+            if not is_overflow and (iteration % hparams.iters_per_train_log == 0):
+                logger.log_images(y_true = y, y_pred = y_pred, iteration = iteration)
+            
+            # Validation images
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
-                #validate(generator, criterion, valset, iteration,
-                #         hparams.batch_size, n_gpus, collate_fn, logger,
-                #         hparams.distributed_run, rank)
+                validate(generator, criterion, valset, iteration,
+                         hparams.batch_size, n_gpus, collate_fn, logger,
+                         hparams.distributed_run, rank, hparams.noise_dim)
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
