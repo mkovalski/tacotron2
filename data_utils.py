@@ -33,7 +33,6 @@ class TextMelLoader(torch.utils.data.Dataset):
         # separate filename and text
         audiopath, text = audiopath_and_text[0], audiopath_and_text[1]
         text = self.get_text(text)
-        #noise = torch.from_numpy(np.random.normal(0, 1, (text.shape[0], self.encoder_dim)))
         mel = self.get_mel(audiopath)
         return (text, mel)
 

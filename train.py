@@ -202,8 +202,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     if hparams.distributed_run:
         generator = apply_gradient_allreduce(generator)
 
-    #criterion = Tacotron2Loss()
-    #criterion = GANLoss()
     criterion = nn.BCELoss()
 
     logger = prepare_directories_and_logger(
@@ -238,12 +236,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             for param_group in g_optimizer.param_groups:
                 param_group['lr'] = learning_rate
                 
-            # Discriminator loss first
-            
             # Sample data
             x, y = generator.parse_batch(batch)
+
             text = x[0]
             mels_true = y[0]
+            mels_true_np = y[0].cpu().numpy()
 
             if hparams.add_gan_noise:
                 mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
@@ -296,6 +294,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 # Forward model
                 y_pred = generator(x, z)
                 y_post = y_pred[1]
+                y_post_np = y_post.detach().cpu().numpy()
 
                 if hparams.add_gan_noise:
                     y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
@@ -336,7 +335,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             
             # Log images during training
             if not is_overflow and (iteration % hparams.iters_per_train_log == 0):
-                logger.log_images(y_true = y, y_pred = y_pred, iteration = iteration)
+                logger.log_images(y_true = mels_true_np, y_pred = y_post_np, iteration = iteration)
             
             # Validation images
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):

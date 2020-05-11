@@ -25,7 +25,6 @@ class LocationLayer(nn.Module):
         processed_attention = self.location_dense(processed_attention)
         return processed_attention
 
-
 class Attention(nn.Module):
     def __init__(self, attention_rnn_dim, embedding_dim, attention_dim,
                  attention_location_n_filters, attention_location_kernel_size):
@@ -444,9 +443,9 @@ class Decoder(nn.Module):
             gate_outputs += [gate_output]
             alignments += [alignment]
 
-            if torch.sigmoid(gate_output.data) > self.gate_threshold:
-                break
-            elif len(mel_outputs) == self.max_decoder_steps:
+            #if torch.sigmoid(gate_output.data) > self.gate_threshold:
+            #    break
+            if len(mel_outputs) == self.max_decoder_steps:
                 print("Warning! Reached max decoder steps")
                 break
 
@@ -502,7 +501,6 @@ class Discriminator(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, text, mel):
-        
         # Pad with as many zeros as we need to for making the full MFCC fit
         # do so with a min width of 64
         embedding_inputs = self.embedding(text).transpose(1, 2)
@@ -590,18 +588,18 @@ class Tacotron2(nn.Module):
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
             output_lengths)
 
-    def inference(self, inputs, z):
-        embedded_inputs = self.embedding(text).transpose(1, 2)
+    def inference(self, inputs, mels, z):
+        embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
         
         encoder_outputs = torch.cat((encoder_outputs, z), -1)
 
         mel_outputs, gate_outputs, alignments = self.decoder.inference(
             encoder_outputs)
-
+        
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
-
+        
         outputs = self.parse_output(
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments])
 

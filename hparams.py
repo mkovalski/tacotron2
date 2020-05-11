@@ -10,7 +10,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # Experiment Parameters        #
         ################################
         epochs=500,
-        iters_per_train_log=100,
+        iters_per_train_log=50,
         iters_per_checkpoint=1000,
         seed=1234,
         dynamic_loss_scaling=True,
@@ -77,9 +77,9 @@ def create_hparams(hparams_string=None, verbose=False):
 
         # GAN parameters
         discrim_min_width = 64,
-        discrim_stride = 32,
-        noise_dim=64, # For generator input
-        gen_steps = 2,
+        discrim_stride = 16,
+        noise_dim=128, # For generator input
+        gen_steps = 3,
         discrim_steps = 1,
         discrim_norm_type = 'instance', # Choose batch or instance
         add_gan_noise = True,
