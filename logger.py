@@ -31,7 +31,7 @@ class Tacotron2Logger(SummaryWriter):
 
     def log_validation(self, reduced_loss, model, y, y_pred, iteration):
         self.add_scalar("validation.loss", reduced_loss, iteration)
-        _, mel_outputs, gate_outputs, alignments = y_pred
+        _, mel_outputs, norm_outputs, gate_outputs, alignments = y_pred
         mel_targets, gate_targets = y
 
         # plot distribution of parameters
@@ -51,7 +51,7 @@ class Tacotron2Logger(SummaryWriter):
             iteration, dataformats='HWC')
         self.add_image(
             "mel_predicted",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
+            plot_spectrogram_to_numpy(norm_outputs[idx].data.cpu().numpy()),
             iteration, dataformats='HWC')
         self.add_image(
             "gate",

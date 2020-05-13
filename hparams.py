@@ -80,14 +80,14 @@ def create_hparams(hparams_string=None, verbose=False):
         # GAN parameters
         discrim_min_width = 64,
         discrim_stride = 16,
-        noise_dim=128, # For generator input
+        noise_dim=64, # For generator input
         gen_steps = 2,
         discrim_steps = 1,
         discrim_norm_type = 'batch', # Choose batch or instance
         add_gan_noise = True,
+        noise_rate = 0.90,
         label_smooth = 0.2,
         label_flip_prob = 0.05,
-        noise_rate = 0.95,
 
         ################################
         # Optimization Hyperparameters #

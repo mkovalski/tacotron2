@@ -568,7 +568,8 @@ class Tacotron2(nn.Module):
 
             outputs[0].data.masked_fill_(mask, 0.0)
             outputs[1].data.masked_fill_(mask, 0.0)
-            outputs[2].data.masked_fill_(mask[:, 0, :], 1e3)  # gate energies
+            outputs[2].data.masked_fill_(mask, 0.0)
+            outputs[3].data.masked_fill_(mask[:, 0, :], 1e3)  # gate energies
 
         return outputs
 
@@ -590,8 +591,11 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
         
+        # Use tanh as activation function
+        norm_outputs = torch.tanh(mel_outputs_postnet)
+        
         return self.parse_output(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
+            [mel_outputs, mel_outputs_postnet, norm_outputs, gate_outputs, alignments],
             output_lengths)
 
     def inference(self, inputs, z):

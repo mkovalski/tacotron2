@@ -243,7 +243,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
             text = x[0]
             mels_true = y[0]
-            mels_true_np = y[0].cpu().numpy()
+
+            # Normalize data per batch between -1 and 1, same as tanh from generator output
+            # TODO: How are we effecting the scaling? Can we go backwards?
+            mels_true = 2 * ((mels_true - torch.min(mels_true)) / (torch.max(mels_true) - torch.min(mels_true))) - 1
+            
+            # For plotting
+            mels_true_np = mels_true.cpu().numpy()
 
             if hparams.add_gan_noise:
                 mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda())
@@ -252,7 +258,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             z = Variable(torch.cuda.FloatTensor(
                 np.random.normal(size = (hparams.batch_size, x[0].size(1), hparams.noise_dim))))
             y_pred = generator(x, z)
-            y_post = y_pred[1]
+            y_post = y_pred[2] # Normalized outputs
             
             for _ in range(discrim_steps):
                 d_optimizer.zero_grad()
@@ -301,20 +307,27 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             # Generator loss
             for _ in range(gen_steps):
                 g_optimizer.zero_grad()
+
                 # Generate noise variable
                 z = Variable(torch.cuda.FloatTensor(
                     np.random.normal(size = (hparams.batch_size, text.size(1), hparams.noise_dim))))
 
                 # Forward model
                 y_pred = generator(x, z)
-                y_post = y_pred[1]
-                y_post_np = y_post.detach().cpu().numpy()
-
-                if hparams.add_gan_noise:
-                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda())
+                y_post = y_pred[2]
+                y_post_np = y_pred[1].detach().cpu().numpy()
+                
+                #if hparams.add_gan_noise:
+                #    y_post = y_post + torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda()
 
                 g_out = discriminator(text, y_post)
-                real_label = torch.full(g_out.size(), 1.0).cuda()
+                
+                # Labels, add noise
+                real_target = 1.0
+                real_target = max(0.0, real_target + np.random.uniform(
+                                                        low = -hparams.label_smooth, high = hparams.label_smooth))
+                                                        
+                real_label = torch.full(g_out.size(), real_target).cuda()
                 err_G = criterion(g_out, real_label)
 
                 if hparams.fp16_run:
