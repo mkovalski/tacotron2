@@ -96,7 +96,7 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate=1e-4,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=2,
+        batch_size=16,
         mask_padding=True  # set model's padded outputs to padded values
     )
 
