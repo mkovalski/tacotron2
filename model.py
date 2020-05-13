@@ -466,7 +466,6 @@ class Discriminator(nn.Module):
     def __init__(self, hparams):
         super(Discriminator, self).__init__()
         self.min_width = hparams.discrim_min_width
-        self.stride = hparams.discrim_stride
 
         self.embedding = nn.Embedding(hparams.n_symbols, 
                                       80)
