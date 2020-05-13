@@ -19,16 +19,12 @@ Visit our [website] for audio samples using our published [Tacotron 2] and
 1. NVIDIA GPU + CUDA cuDNN
 
 ## Setup
-1. Download and extract the [Speech Commands Dataset](http://download.tensorflow.org/data/speech_commands_v0.01.tar.gz)
-2. Clone this repo: `git clone https://github.com/NVIDIA/tacotron2.git`
-3. CD into this repo: `cd tacotron2`
-4. Initialize submodule: `git submodule init; git submodule update`
-5. cd to the `data_prep` folder and run `create_sc.py <DIR>`, where `<DIR>` is the directory to your extracted speech commands dataset.
-    - This will create a train, test, and val folder under `filelists`
-6. Install [PyTorch 1.0]
-7. Install [Apex]
-8. Install python requirements or build docker image 
+1. Install python requirements or build docker image 
     - Install python requirements: `pip install -r requirements.txt`
+2. cd into the `data_prep` folder
+3. To install the speech commands dataset, run `./download_sc.sh`, which will add the data to the `data` directory in the project root
+4. Run `python create_sc.py --datadir ../data/speech_commands/ --dest ../filelists/` to create the train, test, and val datasets
+5. Initialize submodule: `git submodule init; git submodule update`
 
 ## Training
 1. `python train.py --output_directory=outdir --log_directory=logdir`
