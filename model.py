@@ -485,19 +485,21 @@ class Discriminator(nn.Module):
             nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
             d_norm(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.2),
             # state size. (ndf*2) x 16 x 16
             nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
             d_norm(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.2),
             # state size. (ndf*4) x 8 x 8
             nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
             d_norm(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.2),
             # state size. (ndf*8) x 4 x 4
             nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
             )
         
-        self.linear = nn.Linear(2, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, text, mel):
@@ -508,20 +510,24 @@ class Discriminator(nn.Module):
         mel = torch.cat([embedding_inputs, mel], 2)
         
         min_padding = 0
-        if mel.shape[-1] % self.min_width != 0:
-            min_padding = self.min_width - (mel.shape[-1] % self.min_width)
+        if mel.shape[-1] < self.min_width:
+            min_padding = self.min_width - mel.shape[-1]
             mel = F.pad(input=mel, pad=(0, min_padding, 0, 0, 0, 0,), mode='constant', value=0)
 
         mel = mel.unsqueeze(1)
 
-        scores = []
-        for i in range(0, mel.shape[-1] - self.min_width, self.stride):
-            score = self.model(mel[:, :, :, i:i+self.min_width])
-            score = self.sigmoid(score)
-            scores.append(score)
+        score = self.model(mel)
+        score = self.sigmoid(score)
+        return score
+
+        #scores = []
+        #for i in range(0, mel.shape[-1] - self.min_width, self.stride):
+        #    score = self.model(mel[:, :, :, i:i+self.min_width])
+        #    score = self.sigmoid(score)
+        #    scores.append(score)
         
-        scores = torch.cat(scores, axis = -1)
-        return scores
+        #scores = torch.cat(scores, axis = -1)
+        #return scores
 
 class Tacotron2(nn.Module):
     '''Generator model'''
@@ -588,7 +594,7 @@ class Tacotron2(nn.Module):
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
             output_lengths)
 
-    def inference(self, inputs, mels, z):
+    def inference(self, inputs, z):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
         

@@ -27,7 +27,9 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         load_mel_from_disk=False,
         training_files=['filelists/sc_audio_text_train_filelist.txt'],
+                        #'filelists/fs_audio_text_train_filelist.txt'],
         validation_files=['filelists/sc_audio_text_val_filelist.txt'],
+                          #'filelists/fs_audio_text_val_filelist.txt'],
         text_cleaners=['english_cleaners'],
 
         ################################
@@ -79,11 +81,13 @@ def create_hparams(hparams_string=None, verbose=False):
         discrim_min_width = 64,
         discrim_stride = 16,
         noise_dim=128, # For generator input
-        gen_steps = 3,
+        gen_steps = 2,
         discrim_steps = 1,
-        discrim_norm_type = 'instance', # Choose batch or instance
+        discrim_norm_type = 'batch', # Choose batch or instance
         add_gan_noise = True,
-        label_smooth = 0.1,
+        label_smooth = 0.2,
+        label_flip_prob = 0.05,
+        noise_rate = 0.95,
 
         ################################
         # Optimization Hyperparameters #
@@ -92,7 +96,7 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate=1e-4,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=32,
+        batch_size=2,
         mask_padding=True  # set model's padded outputs to padded values
     )
 

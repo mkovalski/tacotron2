@@ -227,6 +227,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     generator.train()
     discriminator.train()
 
+    noise_rate = hparams.noise_rate
+
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
@@ -244,7 +246,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             mels_true_np = y[0].cpu().numpy()
 
             if hparams.add_gan_noise:
-                mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+                mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda())
 
             # Forward model
             z = Variable(torch.cuda.FloatTensor(
@@ -257,9 +259,21 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
                 # Real outputs
                 d_real_out = discriminator(text, mels_true)
+
                 # Labels
-                real_label = torch.full(d_real_out.size(), 1.0 - hparams.label_smooth).cuda()
-                fake_label = torch.full(d_real_out.size(), 0.0 + hparams.label_smooth).cuda()
+                real_target = 1.0
+                fake_target = 0.0
+                if np.random.random() < hparams.label_flip_prob:
+                    real_target = 0.0
+                    fake_target = 1.0
+                
+                real_target = max(0.0, real_target + np.random.uniform(
+                                                        low = -hparams.label_smooth, high = hparams.label_smooth))
+                fake_target = max(0.0, fake_target + np.random.uniform(
+                                                        low = -hparams.label_smooth, high = hparams.label_smooth))
+
+                real_label = torch.full(d_real_out.size(), real_target).cuda()
+                fake_label = torch.full(d_real_out.size(), fake_target).cuda()
 
                 errD_real = criterion(d_real_out, real_label)
                 
@@ -297,7 +311,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 y_post_np = y_post.detach().cpu().numpy()
 
                 if hparams.add_gan_noise:
-                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size()))).cuda())
+                    y_post.add_(torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda())
 
                 g_out = discriminator(text, y_post)
                 real_label = torch.full(g_out.size(), 1.0).cuda()
@@ -349,7 +363,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                                     learning_rate, iteration, checkpoint_path)
 
             iteration += 1
-
+        
+        noise_rate *= noise_rate
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
