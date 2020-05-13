@@ -206,7 +206,7 @@ class Decoder(nn.Module):
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
         self.encoder_embedding_dim = hparams.encoder_embedding_dim
-        self.noise_dim = hparams.noise_dim
+        self.noise_dim = hparams.noise_dim # mhk2160 - noise dimension of latent vector
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -218,7 +218,8 @@ class Decoder(nn.Module):
         self.prenet = Prenet(
             hparams.n_mel_channels * hparams.n_frames_per_step,
             [hparams.prenet_dim, hparams.prenet_dim])
-
+        
+        # mhk2160 - incorporate noise vector into LSTM layers, need to account for new concatenated shape
         self.attention_rnn = nn.LSTMCell(
             hparams.prenet_dim + hparams.encoder_embedding_dim + self.noise_dim,
             hparams.attention_rnn_dim)
@@ -281,6 +282,7 @@ class Decoder(nn.Module):
             B, MAX_TIME).zero_())
         self.attention_weights_cum = Variable(memory.data.new(
             B, MAX_TIME).zero_())
+        # mhk2160 - initialize attention context with additional space for latent vector
         self.attention_context = Variable(memory.data.new(
             B, self.encoder_embedding_dim + self.noise_dim).zero_())
 
@@ -430,6 +432,10 @@ class Decoder(nn.Module):
         gate_outputs: gate outputs from the decoder
         alignments: sequence of attention weights from the decoder
         """
+
+        # mhk2160 - we modify the inference function to output a 
+        # mel frequency spectrogram of max length, then in inference.ipynb
+        # tool we postprocess to use time length of interest
         decoder_input = self.get_go_frame(memory)
 
         self.initialize_decoder_states(memory, mask=None)
@@ -443,8 +449,6 @@ class Decoder(nn.Module):
             gate_outputs += [gate_output]
             alignments += [alignment]
 
-            #if torch.sigmoid(gate_output.data) > self.gate_threshold:
-            #    break
             if len(mel_outputs) == self.max_decoder_steps:
                 print("Warning! Reached max decoder steps")
                 break
@@ -456,6 +460,8 @@ class Decoder(nn.Module):
 
         return mel_outputs, gate_outputs, alignments
 
+# mhk2160 - The Discriminator class is my own and was added to the framework
+# Network is used as a discriminator to distinguish real from fake samples
 class Discriminator(nn.Module):
     def __init__(self, hparams):
         super(Discriminator, self).__init__()
@@ -476,7 +482,8 @@ class Discriminator(nn.Module):
                  'instance': nn.InstanceNorm2d}
 
         d_norm = norms[hparams.discrim_norm_type]
-
+        
+        # mhk2160 - Define a sequential model to apply to MFS features
         self.model = nn.Sequential(
             # input is (nc) x 64 x 64
             nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
@@ -501,14 +508,17 @@ class Discriminator(nn.Module):
             )
         
         self.sigmoid = nn.Sigmoid()
-
+    
     def forward(self, text, mel):
+        # mhk2160 - Forward takes a condition (text) and mel frequency spectrogram
+        # as input returns a matrix of probabilities for the model
         # Pad with as many zeros as we need to for making the full MFCC fit
         # do so with a min width of 64
         embedding_inputs = self.embedding(text).transpose(1, 2)
         
         mel = torch.cat([embedding_inputs, mel], 2)
         
+        # mhk2160 - Make sure the mel meets the minimum required size
         min_padding = 0
         if mel.shape[-1] < self.min_width:
             min_padding = self.min_width - mel.shape[-1]
@@ -519,7 +529,11 @@ class Discriminator(nn.Module):
         score = self.model(mel)
         score = self.sigmoid(score)
         return score
-
+        
+        # mhk2160 - legacy code through experimentation, idea was to stride over the
+        # MFS since size is unknown and can vary based on text length
+        # Instead, since data from speech commands relatively same size, just apply
+        # a single convolutional layer
         #scores = []
         #for i in range(0, mel.shape[-1] - self.min_width, self.stride):
         #    score = self.model(mel[:, :, :, i:i+self.min_width])
@@ -582,7 +596,7 @@ class Tacotron2(nn.Module):
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 
-        # tf.cat layer here to append random noise
+        # mhk2160 - tf.cat layer here to append latent noise
         encoder_outputs = torch.cat((encoder_outputs, z), -1)
         
         mel_outputs, gate_outputs, alignments = self.decoder(
@@ -591,7 +605,7 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
         
-        # Use tanh as activation function
+        # mhk2160 - Use tanh as activation function
         norm_outputs = torch.tanh(mel_outputs_postnet)
         
         return self.parse_output(
@@ -602,6 +616,7 @@ class Tacotron2(nn.Module):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
         
+        # mhk2160 - tf.cat layer here to append latent noise
         encoder_outputs = torch.cat((encoder_outputs, z), -1)
 
         mel_outputs, gate_outputs, alignments = self.decoder.inference(

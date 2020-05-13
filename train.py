@@ -116,6 +116,7 @@ def load_checkpoint(checkpoint_path, model, optimizer):
 
 
 def save_checkpoint(generator, discriminator, g_opt, d_opt, learning_rate, iteration, filepath):
+    # mhk2160 - save generator, discriminator, and all other variables to state_dict
     print("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
     torch.save({'iteration': iteration,
@@ -129,6 +130,9 @@ def save_checkpoint(generator, discriminator, g_opt, d_opt, learning_rate, itera
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
              collate_fn, logger, distributed_run, rank, noise_dim):
     """Handles all the validation scoring and printing"""
+    # mhk2160 - run single prediction over the validation dataset (shuffled)
+    # Hard to determine "validation" metrics in GAN, so just use output of an 
+    # example and log to tensorboard
     model.eval()
     with torch.no_grad():
         val_sampler = DistributedSampler(valset) if distributed_run else None
@@ -145,13 +149,6 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
 
             y_pred = model(x, z)
             break
-            #loss = criterion(y_pred, y)
-            #if distributed_run:
-            #    reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
-            #else:
-            #    reduced_val_loss = loss.item()
-            #val_loss += reduced_val_loss
-        #val_loss = val_loss / (i + 1)
     
     val_loss = 0
     model.train()
@@ -179,10 +176,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     torch.cuda.manual_seed(hparams.seed)
 
     # Load the two models
+    # mhk2160 - create a generator and discriminator
     generator = load_model(hparams)
     discriminator = Discriminator(hparams).cuda()
     
     learning_rate = hparams.learning_rate
+
+    # mhk2160 - two separate optimizers
     g_optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate,
                                  weight_decay=hparams.weight_decay,)
     
@@ -201,7 +201,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     if hparams.distributed_run:
         generator = apply_gradient_allreduce(generator)
-
+    
+    # mhk2160 - Use a binary cross entropy loss for real and fake samples
     criterion = nn.BCELoss()
 
     logger = prepare_directories_and_logger(
@@ -226,7 +227,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     generator.train()
     discriminator.train()
-
+    
+    # mhk2160 - add noise to discriminator input, as sugessted via GAN papers.
+    # Decay this over each epoch to apply less noise as model improves
     noise_rate = hparams.noise_rate
 
     is_overflow = False
@@ -240,26 +243,30 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 
             # Sample data
             x, y = generator.parse_batch(batch)
-
+            
+            # mhk2160 - extract the text and the MFS features
             text = x[0]
             mels_true = y[0]
-
+            
+            # mhk2160 - normalize input features, should help network train more efficiently
             # Normalize data per batch between -1 and 1, same as tanh from generator output
             # TODO: How are we effecting the scaling? Can we go backwards?
             mels_true = 2 * ((mels_true - torch.min(mels_true)) / (torch.max(mels_true) - torch.min(mels_true))) - 1
             
-            # For plotting
+            # mhk2160 - For plotting convert to numpy
             mels_true_np = mels_true.cpu().numpy()
-
+            
+            # mhk2160 - Add small amounts of gaussian noise to input
             if hparams.add_gan_noise:
                 mels_true.add_(torch.Tensor(np.random.normal(size = (mels_true.size())) * noise_rate).cuda())
 
-            # Forward model
+            # mhk2160 Forward model - generate based on random gaussian sample and text input
             z = Variable(torch.cuda.FloatTensor(
                 np.random.normal(size = (hparams.batch_size, x[0].size(1), hparams.noise_dim))))
             y_pred = generator(x, z)
             y_post = y_pred[2] # Normalized outputs
             
+            # mhk2160 - Train the discriminator for a number of steps
             for _ in range(discrim_steps):
                 d_optimizer.zero_grad()
 
@@ -304,7 +311,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 # Optimization step
                 d_optimizer.step()
             
-            # Generator loss
+            # mhk2160 Train the generator for a number of steps
             for _ in range(gen_steps):
                 g_optimizer.zero_grad()
 
@@ -377,6 +384,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
             iteration += 1
         
+        # Exponentially decay noise
         noise_rate *= noise_rate
 
 if __name__ == '__main__':

@@ -77,17 +77,16 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_kernel_size=5,
         postnet_n_convolutions=5,
 
-        # GAN parameters
-        discrim_min_width = 64,
-        discrim_stride = 16,
-        noise_dim=64, # For generator input
-        gen_steps = 2,
-        discrim_steps = 1,
-        discrim_norm_type = 'batch', # Choose batch or instance
-        add_gan_noise = True,
-        noise_rate = 0.90,
-        label_smooth = 0.2,
-        label_flip_prob = 0.05,
+        # mhk2160 - GAN parameters, each with an explanation
+        discrim_min_width = 64, # Min width of the mel frequency inputs to discriminator
+        noise_dim=64, # Noise vector size passed into generator
+        gen_steps = 2, # Number of steps to update the generator per batch
+        discrim_steps = 1, # Number of steps to update the discriminator per batch
+        discrim_norm_type = 'batch', # Choose batch or instance normalization for the discriminator layers
+        add_gan_noise = True, # Add random noise to the inputs of the GAN to improve stability
+        noise_rate = 0.90, # Rate at which to add noise to the inputs, exponentially decay over time
+        label_smooth = 0.2, # Apply label smoothing to targets for generator and discriminator
+        label_flip_prob = 0.05, # Flip labels with some small probability
 
         ################################
         # Optimization Hyperparameters #
